@@ -22,8 +22,16 @@ class ResetUserPassword implements ResetsUserPasswords
             'password' => $this->passwordRules(),
         ])->validate();
 
+        $tenant = $user->tenantProfile;
+        $isPortalActivation = $tenant !== null && $tenant->portal_activated_at === null;
+
         $user->forceFill([
             'password' => $input['password'],
+            'email_verified_at' => $isPortalActivation ? now() : $user->email_verified_at,
         ])->save();
+
+        if ($isPortalActivation) {
+            $tenant->update(['portal_activated_at' => now()]);
+        }
     }
 }

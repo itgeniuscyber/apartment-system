@@ -18,6 +18,19 @@ declare module '@inertiajs/core' {
         sharedPageProps: {
             name: string;
             auth: Auth;
+            notificationCenter: {
+                unread: number;
+                items: Array<{
+                    id: string;
+                    title: string;
+                    message: string;
+                    severity: string;
+                    action_url: string | null;
+                    reference: string | null;
+                    read: boolean;
+                    created_at: string | null;
+                }>;
+            };
             sidebarOpen: boolean;
             [key: string]: unknown;
         };

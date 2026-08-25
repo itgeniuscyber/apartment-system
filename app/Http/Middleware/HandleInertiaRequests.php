@@ -41,7 +41,44 @@ class HandleInertiaRequests extends Middleware
             'auth' => [
                 'user' => $request->user(),
             ],
+            'notificationCenter' => fn (): array => $this->notificationCenter($request),
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',
+        ];
+    }
+
+    /** @return array{unread: int, items: list<array<string, mixed>>} */
+    private function notificationCenter(Request $request): array
+    {
+        $user = $request->user();
+
+        if ($user === null) {
+            return ['unread' => 0, 'items' => []];
+        }
+
+        $notifiable = $user->isManagement()
+            ? $user
+            : $user->tenantProfile()->first();
+
+        if ($notifiable === null) {
+            return ['unread' => 0, 'items' => []];
+        }
+
+        return [
+            'unread' => $notifiable->unreadNotifications()->count(),
+            'items' => array_values($notifiable->notifications()
+                ->latest()
+                ->limit(8)
+                ->get()
+                ->map(fn ($notification): array => [
+                    'id' => $notification->id,
+                    'title' => $notification->data['title'] ?? 'Notification',
+                    'message' => $notification->data['message'] ?? '',
+                    'severity' => $notification->data['severity'] ?? 'info',
+                    'action_url' => $notification->data['action_url'] ?? null,
+                    'reference' => $notification->data['reference'] ?? null,
+                    'read' => $notification->read_at !== null,
+                    'created_at' => $notification->created_at?->diffForHumans(),
+                ])->all()),
         ];
     }
 }

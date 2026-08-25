@@ -5,6 +5,7 @@ namespace Database\Seeders;
 use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
 
 class DatabaseSeeder extends Seeder
 {
@@ -15,11 +16,20 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // User::factory(10)->create();
+        $this->call(PortfolioSeeder::class);
 
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
-        ]);
+        if (! app()->environment('local')) {
+            return;
+        }
+
+        User::query()->updateOrCreate(
+            ['email' => 'admin@krestates.test'],
+            [
+                'name' => 'K&R Administrator',
+                'role' => 'administrator',
+                'email_verified_at' => now(),
+                'password' => Hash::make('password'),
+            ],
+        );
     }
 }
