@@ -4,9 +4,15 @@ namespace App\Http\Controllers;
 
 use App\Models\Estate;
 use App\Models\Invoice;
+use App\Models\Lease;
+use App\Models\MaintenanceRequest;
+use App\Models\MessageThread;
 use App\Models\Payment;
 use App\Models\Section;
 use App\Models\SettlementAccount;
+use App\Models\Tenant;
+use App\Models\Unit;
+use App\Models\User;
 use Carbon\CarbonInterface;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
@@ -18,6 +24,10 @@ class DashboardController extends Controller
     {
         if (! $request->user()?->isManagement()) {
             return $this->tenantDashboard($request);
+        }
+
+        if (! $request->user()->isSuperAdmin()) {
+            return $this->managementDashboard($request);
         }
 
         $estates = Estate::query()
@@ -73,6 +83,24 @@ class DashboardController extends Controller
                 ];
             })->values(),
             'settlementAccounts' => $accounts->values(),
+        ]);
+    }
+
+    private function managementDashboard(Request $request): Response
+    {
+        $permissions = $request->user()->permissions ?? User::ADMIN_PERMISSIONS;
+
+        return Inertia::render('ManagementDashboard', [
+            'staffName' => $request->user()?->name,
+            'permissions' => $permissions,
+            'summary' => [
+                'estates' => Estate::query()->count(),
+                'units' => Unit::query()->count(),
+                'tenants' => Tenant::query()->count(),
+                'active_leases' => Lease::query()->where('status', 'active')->count(),
+                'open_maintenance' => MaintenanceRequest::query()->whereNotIn('status', ['resolved', 'closed'])->count(),
+                'unread_messages' => MessageThread::query()->where('status', 'open')->count(),
+            ],
         ]);
     }
 

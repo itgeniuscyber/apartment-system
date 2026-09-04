@@ -28,6 +28,7 @@ class UserFactory extends Factory
             'name' => fake()->name(),
             'email' => fake()->unique()->safeEmail(),
             'role' => 'tenant',
+            'is_active' => true,
             'email_verified_at' => now(),
             'password' => static::$password ??= Hash::make('password'),
             'remember_token' => Str::random(10),
@@ -53,7 +54,14 @@ class UserFactory extends Factory
     public function management(): static
     {
         return $this->state(fn (array $attributes) => [
-            'role' => 'administrator',
+            'role' => 'super_admin',
+        ]);
+    }
+
+    public function superAdmin(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'role' => 'super_admin',
         ]);
     }
 

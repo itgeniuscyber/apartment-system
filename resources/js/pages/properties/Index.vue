@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { Head, useForm } from '@inertiajs/vue3';
+import { Head, useForm, usePage } from '@inertiajs/vue3';
 import {
     ArrowRight,
     Banknote,
     Building2,
+    CalendarClock,
     CheckCircle2,
     CircleDollarSign,
     Grid3X3,
+    History,
     Layers3,
     MapPin,
+    Pencil,
     Plus,
     Search,
     Settings2,
     Sparkles,
+    UserRound,
     WalletCards,
 } from '@lucide/vue';
 import { computed, ref, watch } from 'vue';
@@ -45,6 +49,27 @@ type Unit = {
     rent_amount: number;
     status: string;
     is_active: boolean;
+    active_lease: {
+        id: number;
+        lease_number: string;
+        tenant_name: string;
+        rent_amount: number;
+    } | null;
+    upcoming_rate: {
+        amount: number;
+        effective_from: string;
+        effective_from_label: string;
+    } | null;
+    rent_rates: Array<{
+        id: number;
+        amount: number;
+        effective_from: string;
+        effective_from_label: string;
+        effective_to_label: string | null;
+        source: string;
+        notes: string | null;
+        created_by: string;
+    }>;
 };
 
 type Section = {
@@ -94,9 +119,16 @@ const props = defineProps<{
 }>();
 
 const selectedEstateId = ref<number | null>(props.estates[0]?.id ?? null);
+const selectedUnitId = ref<number | null>(null);
 const search = ref('');
 const estateDialogOpen = ref(false);
 const sectionDialogOpen = ref(false);
+const unitDialogOpen = ref(false);
+const rateDialogOpen = ref(false);
+const page = usePage();
+const isSuperAdmin = computed(
+    () => page.props.auth.access?.is_super_admin ?? false,
+);
 
 const selectedEstate = computed(
     () =>
@@ -104,6 +136,22 @@ const selectedEstate = computed(
         props.estates[0] ??
         null,
 );
+
+const selectedUnit = computed(() => {
+    for (const estate of props.estates) {
+        for (const section of estate.sections) {
+            const unit = section.units.find(
+                (item) => item.id === selectedUnitId.value,
+            );
+
+            if (unit) {
+                return { ...unit, estate: estate.name, section: section.name };
+            }
+        }
+    }
+
+    return null;
+});
 
 const filteredEstates = computed(() => {
     const term = search.value.trim().toLowerCase();
@@ -151,6 +199,19 @@ const sectionForm = useForm({
     default_rent: 500000,
 });
 
+const nextMonthStart = (): string => {
+    const date = new Date();
+    date.setUTCMonth(date.getUTCMonth() + 1, 1);
+
+    return date.toISOString().slice(0, 10);
+};
+
+const rateForm = useForm({
+    amount: 0,
+    effective_from: nextMonthStart(),
+    notes: '',
+});
+
 const formatMoney = (value: number): string =>
     `UGX ${new Intl.NumberFormat('en-UG', { maximumFractionDigits: 0 }).format(value)}`;
 
@@ -173,6 +234,44 @@ const statusLabel = (status: string): string =>
         .split('_')
         .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
         .join(' ');
+
+const sourceLabel = (source: string): string =>
+    source === 'admin_revision' ? 'Admin change' : 'Original rate';
+
+const openUnitDialog = (unit: Unit): void => {
+    selectedUnitId.value = unit.id;
+    unitDialogOpen.value = true;
+};
+
+const openRateDialog = (): void => {
+    if (!selectedUnit.value) {
+        return;
+    }
+
+    rateForm.reset();
+    rateForm.clearErrors();
+    rateForm.amount = selectedUnit.value.rent_amount;
+    rateForm.effective_from = nextMonthStart();
+    unitDialogOpen.value = false;
+    rateDialogOpen.value = true;
+};
+
+const submitRate = (): void => {
+    const unit = selectedUnit.value;
+
+    if (!unit) {
+        return;
+    }
+
+    rateForm.post(`/properties/units/${unit.id}/rent-rates`, {
+        preserveScroll: true,
+        onSuccess: () => {
+            rateDialogOpen.value = false;
+            rateForm.reset();
+            toast.success('Standard unit rent scheduled');
+        },
+    });
+};
 
 const openSectionDialog = (estate: Estate): void => {
     sectionForm.reset();
@@ -651,6 +750,7 @@ const submitSection = (): void => {
                                     type="button"
                                     class="group rounded-xl border border-border/60 bg-card p-3 text-left shadow-xs transition-all hover:-translate-y-0.5 hover:border-accent/30 hover:shadow-md"
                                     :title="`${unit.code} · ${statusLabel(unit.status)}`"
+                                    @click="openUnitDialog(unit)"
                                 >
                                     <div
                                         class="flex items-center justify-between gap-2"
@@ -742,6 +842,249 @@ const submitSection = (): void => {
             </article>
         </section>
     </div>
+
+    <Dialog v-model:open="unitDialogOpen">
+        <DialogContent class="rounded-[1.5rem] border-border/70 sm:max-w-xl">
+            <DialogHeader class="text-left">
+                <span
+                    class="mb-2 flex size-11 items-center justify-center rounded-2xl bg-accent/10 text-accent"
+                    ><Building2 class="size-5"
+                /></span>
+                <DialogTitle class="text-xl tracking-[-0.035em]">
+                    {{ selectedUnit?.estate }} · {{ selectedUnit?.number }}
+                </DialogTitle>
+                <DialogDescription class="text-xs leading-5">
+                    {{ selectedUnit?.section }} · {{ selectedUnit?.code }}. The
+                    standard unit rate is separate from any tenant-specific
+                    lease agreement.
+                </DialogDescription>
+            </DialogHeader>
+
+            <div v-if="selectedUnit" class="space-y-4 py-2">
+                <div class="grid gap-3 sm:grid-cols-2">
+                    <div class="rounded-2xl border border-border/70 p-4">
+                        <p
+                            class="text-[9px] font-bold tracking-wide text-muted-foreground uppercase"
+                        >
+                            Standard unit rent
+                        </p>
+                        <p class="money mt-2 text-lg font-semibold">
+                            {{ formatMoney(selectedUnit.rent_amount) }}
+                        </p>
+                        <p
+                            v-if="selectedUnit.upcoming_rate"
+                            class="mt-2 flex items-center gap-1.5 text-[10px] text-amber-600 dark:text-amber-400"
+                        >
+                            <CalendarClock class="size-3.5" />
+                            {{ formatMoney(selectedUnit.upcoming_rate.amount) }}
+                            from
+                            {{
+                                selectedUnit.upcoming_rate.effective_from_label
+                            }}
+                        </p>
+                        <p
+                            v-else
+                            class="mt-2 text-[10px] text-muted-foreground"
+                        >
+                            No future standard change scheduled
+                        </p>
+                    </div>
+
+                    <div class="rounded-2xl border border-border/70 p-4">
+                        <p
+                            class="text-[9px] font-bold tracking-wide text-muted-foreground uppercase"
+                        >
+                            Current resident
+                        </p>
+                        <template v-if="selectedUnit.active_lease">
+                            <p
+                                class="mt-2 flex items-center gap-2 text-sm font-semibold"
+                            >
+                                <UserRound class="size-4 text-accent" />
+                                {{ selectedUnit.active_lease.tenant_name }}
+                            </p>
+                            <p
+                                class="money mt-2 text-[11px] text-muted-foreground"
+                            >
+                                Tenant lease rent:
+                                {{
+                                    formatMoney(
+                                        selectedUnit.active_lease.rent_amount,
+                                    )
+                                }}
+                            </p>
+                        </template>
+                        <p v-else class="mt-2 text-xs text-muted-foreground">
+                            This unit has no active tenant lease.
+                        </p>
+                    </div>
+                </div>
+
+                <div class="rounded-2xl border border-border/70">
+                    <div
+                        class="flex items-center gap-2 border-b border-border/70 px-4 py-3"
+                    >
+                        <History class="size-4 text-accent" />
+                        <p class="text-xs font-semibold">
+                            Standard rate history
+                        </p>
+                    </div>
+                    <div
+                        v-if="selectedUnit.rent_rates.length"
+                        class="max-h-52 divide-y divide-border/70 overflow-y-auto"
+                    >
+                        <div
+                            v-for="rate in selectedUnit.rent_rates"
+                            :key="rate.id"
+                            class="flex items-start justify-between gap-4 px-4 py-3"
+                        >
+                            <div>
+                                <p class="money text-xs font-semibold">
+                                    {{ formatMoney(rate.amount) }}
+                                </p>
+                                <p
+                                    class="mt-1 text-[10px] text-muted-foreground"
+                                >
+                                    {{ rate.effective_from_label }} →
+                                    {{ rate.effective_to_label || 'Current' }}
+                                </p>
+                                <p
+                                    v-if="rate.notes"
+                                    class="mt-1 text-[10px] text-muted-foreground"
+                                >
+                                    {{ rate.notes }}
+                                </p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-[9px] font-semibold">
+                                    {{ sourceLabel(rate.source) }}
+                                </p>
+                                <p
+                                    class="mt-1 text-[9px] text-muted-foreground"
+                                >
+                                    {{ rate.created_by }}
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <p v-else class="px-4 py-5 text-xs text-muted-foreground">
+                        No standard rate history has been recorded yet.
+                    </p>
+                </div>
+
+                <div
+                    class="flex items-start gap-3 rounded-2xl bg-muted/55 p-4 text-xs leading-5 text-muted-foreground"
+                >
+                    <CheckCircle2 class="mt-0.5 size-4 shrink-0 text-accent" />
+                    Changing this standard rate sets the default for future
+                    leases. It never overwrites an active tenant’s negotiated
+                    rent or an issued invoice.
+                </div>
+            </div>
+
+            <DialogFooter>
+                <button
+                    type="button"
+                    class="h-10 rounded-full px-4 text-xs font-semibold hover:bg-secondary"
+                    @click="unitDialogOpen = false"
+                >
+                    Close
+                </button>
+                <button
+                    v-if="isSuperAdmin"
+                    type="button"
+                    class="inline-flex h-10 items-center gap-2 rounded-full bg-accent px-5 text-xs font-semibold text-white"
+                    @click="openRateDialog"
+                >
+                    <Pencil class="size-4" /> Change standard rent
+                </button>
+            </DialogFooter>
+        </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="rateDialogOpen">
+        <DialogContent class="rounded-[1.5rem] border-border/70 sm:max-w-md">
+            <DialogHeader class="text-left">
+                <span
+                    class="mb-2 flex size-11 items-center justify-center rounded-2xl bg-accent/10 text-accent"
+                    ><CalendarClock class="size-5"
+                /></span>
+                <DialogTitle class="text-xl tracking-[-0.035em]"
+                    >Schedule standard rent</DialogTitle
+                >
+                <DialogDescription class="text-xs leading-5">
+                    Set the future default for {{ selectedUnit?.code }}. Active
+                    tenant rent remains controlled by the lease register.
+                </DialogDescription>
+            </DialogHeader>
+
+            <form class="space-y-4 py-2" @submit.prevent="submitRate">
+                <div class="space-y-2">
+                    <Label for="unit-standard-rent">New monthly rent</Label>
+                    <Input
+                        id="unit-standard-rent"
+                        v-model="rateForm.amount"
+                        type="number"
+                        min="0"
+                        step="1000"
+                        class="h-11 rounded-xl"
+                    />
+                    <InputError :message="rateForm.errors.amount" />
+                </div>
+                <div class="space-y-2">
+                    <Label for="unit-rate-date">Effective month</Label>
+                    <Input
+                        id="unit-rate-date"
+                        v-model="rateForm.effective_from"
+                        type="date"
+                        class="h-11 rounded-xl"
+                    />
+                    <InputError :message="rateForm.errors.effective_from" />
+                    <p class="text-[10px] text-muted-foreground">
+                        Select the first day of a month.
+                    </p>
+                </div>
+                <div class="space-y-2">
+                    <Label for="unit-rate-notes"
+                        >Reason or notes
+                        <span class="text-muted-foreground"
+                            >(optional)</span
+                        ></Label
+                    >
+                    <textarea
+                        id="unit-rate-notes"
+                        v-model="rateForm.notes"
+                        rows="3"
+                        placeholder="e.g. Annual standard-rate review"
+                        class="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm outline-none focus:border-ring focus:ring-3 focus:ring-ring/20"
+                    />
+                    <InputError :message="rateForm.errors.notes" />
+                </div>
+
+                <DialogFooter class="border-t border-border/70 pt-5">
+                    <button
+                        type="button"
+                        class="h-10 rounded-full px-4 text-xs font-semibold hover:bg-secondary"
+                        @click="rateDialogOpen = false"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="submit"
+                        class="inline-flex h-10 items-center gap-2 rounded-full bg-accent px-5 text-xs font-semibold text-white disabled:opacity-50"
+                        :disabled="rateForm.processing"
+                    >
+                        <CalendarClock class="size-4" />
+                        {{
+                            rateForm.processing
+                                ? 'Scheduling...'
+                                : 'Schedule rate'
+                        }}
+                    </button>
+                </DialogFooter>
+            </form>
+        </DialogContent>
+    </Dialog>
 
     <Dialog v-model:open="estateDialogOpen">
         <DialogContent

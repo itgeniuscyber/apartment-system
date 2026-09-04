@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Link } from '@inertiajs/vue3';
+import { Link, usePage } from '@inertiajs/vue3';
 import {
     BarChart3,
     Building2,
@@ -7,6 +7,8 @@ import {
     LayoutDashboard,
     LockKeyhole,
     MessageSquareText,
+    HandCoins,
+    ArrowLeftRight,
     ReceiptText,
     Settings2,
     ShieldCheck,
@@ -14,6 +16,7 @@ import {
     WalletCards,
     Wrench,
 } from '@lucide/vue';
+import { computed } from 'vue';
 import AppLogo from '@/components/AppLogo.vue';
 import NavMain from '@/components/NavMain.vue';
 import NavUser from '@/components/NavUser.vue';
@@ -29,35 +32,78 @@ import {
 import { dashboard } from '@/routes';
 import type { NavItem } from '@/types';
 
-const operations: NavItem[] = [
-    { title: 'Overview', href: dashboard(), icon: LayoutDashboard },
-    { title: 'Estates & units', href: '/properties', icon: Building2 },
-    { title: 'Tenants', href: '/tenants', icon: UsersRound },
-    { title: 'Leases', href: '/leases', icon: FileText },
-    { title: 'Finance', href: '/finance', icon: WalletCards },
-    { title: 'Maintenance', href: '/maintenance', icon: Wrench },
-    {
-        title: 'Messages',
-        href: '/messages',
-        icon: MessageSquareText,
-    },
-];
+const page = usePage();
+const access = computed(() => page.props.auth.access);
+const isSuperAdmin = computed(() => access.value?.is_super_admin ?? false);
+const can = (permission: string): boolean =>
+    isSuperAdmin.value ||
+    (access.value?.permissions ?? []).includes(permission);
 
-const oversight: NavItem[] = [
-    { title: 'Reports', href: '/reports', icon: BarChart3 },
-    { title: 'Security', href: '/security', icon: ShieldCheck },
-    {
-        title: 'Communications',
-        href: '/communication-settings',
-        icon: Settings2,
-    },
-    {
-        title: 'Smart access',
-        href: '/smart-access',
-        icon: LockKeyhole,
-        badge: 'Soon',
-    },
-];
+const operations = computed<NavItem[]>(() => [
+    { title: 'Overview', href: dashboard(), icon: LayoutDashboard },
+    ...(can('portfolio.manage')
+        ? [{ title: 'Estates & units', href: '/properties', icon: Building2 }]
+        : []),
+    ...(can('tenants.manage')
+        ? [{ title: 'Tenants', href: '/tenants', icon: UsersRound }]
+        : []),
+    ...(can('leases.manage')
+        ? [{ title: 'Leases', href: '/leases', icon: FileText }]
+        : []),
+    ...(can('finance.operations')
+        ? [{ title: 'Rent finance', href: '/finance', icon: WalletCards }]
+        : []),
+    ...(can('cashflow.manage')
+        ? [
+              {
+                  title: 'Expenses & revenue',
+                  href: '/cashflow',
+                  icon: ArrowLeftRight,
+              },
+          ]
+        : []),
+    ...(isSuperAdmin.value
+        ? [{ title: 'Loans', href: '/loans', icon: HandCoins }]
+        : []),
+    ...(can('maintenance.manage')
+        ? [{ title: 'Maintenance', href: '/maintenance', icon: Wrench }]
+        : []),
+    ...(can('messages.manage')
+        ? [
+              {
+                  title: 'Messages',
+                  href: '/messages',
+                  icon: MessageSquareText,
+              },
+          ]
+        : []),
+]);
+
+const oversight = computed<NavItem[]>(() => [
+    ...(can('reports.view')
+        ? [{ title: 'Reports', href: '/reports', icon: BarChart3 }]
+        : []),
+    ...(isSuperAdmin.value
+        ? [
+              {
+                  title: 'Staff & security',
+                  href: '/security',
+                  icon: ShieldCheck,
+              },
+              {
+                  title: 'Communications',
+                  href: '/communication-settings',
+                  icon: Settings2,
+              },
+              {
+                  title: 'Smart access',
+                  href: '/smart-access',
+                  icon: LockKeyhole,
+                  badge: 'Soon',
+              },
+          ]
+        : []),
+]);
 </script>
 
 <template>
@@ -78,11 +124,16 @@ const oversight: NavItem[] = [
 
         <SidebarContent class="pt-2">
             <NavMain label="Management" :items="operations" />
-            <NavMain label="Oversight" :items="oversight" />
+            <NavMain
+                v-if="oversight.length"
+                label="Oversight"
+                :items="oversight"
+            />
         </SidebarContent>
 
         <SidebarFooter class="gap-3 px-3 pb-3">
             <div
+                v-if="isSuperAdmin"
                 class="rent-target-card rounded-2xl border border-sidebar-border bg-sidebar-foreground/[0.035] p-3.5 group-data-[collapsible=icon]:hidden"
             >
                 <div class="flex items-center justify-between">

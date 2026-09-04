@@ -11,7 +11,8 @@ class ManagementNotifier
     public function send(ManagementEventNotification $notification): void
     {
         $recipients = User::query()
-            ->whereIn('role', ['administrator', 'landlord', 'manager'])
+            ->whereIn('role', ['super_admin', 'administrator', 'landlord', 'manager'])
+            ->where('is_active', true)
             ->get();
 
         Notification::sendNow($recipients, $notification, ['database']);

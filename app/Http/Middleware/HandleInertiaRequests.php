@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\User;
 use Illuminate\Http\Request;
 use Inertia\Middleware;
 
@@ -40,6 +41,15 @@ class HandleInertiaRequests extends Middleware
             'name' => config('app.name'),
             'auth' => [
                 'user' => $request->user(),
+                'access' => $request->user() === null ? null : [
+                    'is_management' => $request->user()->isManagement(),
+                    'is_super_admin' => $request->user()->isSuperAdmin(),
+                    'permissions' => ! $request->user()->isManagement()
+                        ? []
+                        : ($request->user()->isSuperAdmin()
+                            ? User::ADMIN_PERMISSIONS
+                            : ($request->user()->permissions ?? User::ADMIN_PERMISSIONS)),
+                ],
             ],
             'notificationCenter' => fn (): array => $this->notificationCenter($request),
             'sidebarOpen' => ! $request->hasCookie('sidebar_state') || $request->cookie('sidebar_state') === 'true',

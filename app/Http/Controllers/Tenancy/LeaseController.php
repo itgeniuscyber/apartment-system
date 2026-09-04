@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Tenancy\StoreLeaseRequest;
 use App\Http\Requests\Tenancy\UpdateLeaseRequest;
 use App\Models\Lease;
+use App\Models\LeaseRentRevision;
 use App\Models\Tenant;
 use App\Models\Unit;
 use Carbon\CarbonImmutable;
@@ -22,7 +23,7 @@ class LeaseController extends Controller
     public function index(): Response
     {
         $leases = Lease::query()
-            ->with(['tenant', 'unit.section.estate'])
+            ->with(['tenant', 'unit.section.estate', 'rentRevisions.creator', 'rentRevisions.approver'])
             ->withCount('invoices')
             ->orderByDesc('start_date')
             ->get();
@@ -38,7 +39,7 @@ class LeaseController extends Controller
                 'total' => $leases->count(),
                 'active' => $leases->where('status', 'active')->count(),
                 'draft' => $leases->where('status', 'draft')->count(),
-                'monthly_rent' => $leases->where('status', 'active')->sum('rent_amount'),
+                'monthly_rent' => $leases->where('status', 'active')->sum(fn (Lease $lease): int => $lease->rentForDate(now()->startOfMonth())),
                 'deposits' => $leases->where('status', 'active')->sum('deposit_amount'),
             ],
             'leases' => $leases->map(fn (Lease $lease) => $this->leaseData($lease))->values(),
@@ -86,6 +87,7 @@ class LeaseController extends Controller
 
             Lease::query()->create([
                 ...$data,
+                'initial_rent_amount' => $data['rent_amount'],
                 'lease_number' => $this->nextLeaseNumber(),
                 'billing_frequency' => 'monthly',
                 'signed_at' => $status === 'active' ? now() : null,
@@ -116,6 +118,12 @@ class LeaseController extends Controller
             }
 
             if ($lockedLease->status === 'active') {
+                if ((int) $data['rent_amount'] !== $lockedLease->rentForDate(now()->startOfMonth())) {
+                    throw ValidationException::withMessages([
+                        'rent_amount' => 'Use Change rent to schedule an approved tenant-specific rent revision with history.',
+                    ]);
+                }
+
                 if ((int) $data['tenant_id'] !== $lockedLease->tenant_id) {
                     throw ValidationException::withMessages([
                         'tenant_id' => 'End this lease before assigning it to another tenant.',
@@ -143,7 +151,10 @@ class LeaseController extends Controller
                 }
             }
 
-            $lockedLease->update($data);
+            $lockedLease->update([
+                ...$data,
+                ...($lockedLease->status === 'draft' ? ['initial_rent_amount' => $data['rent_amount']] : []),
+            ]);
         });
 
         return to_route('leases.index')->with('success', 'Lease terms updated. Existing invoices were not changed.');
@@ -260,6 +271,13 @@ class LeaseController extends Controller
     /** @return array<string, mixed> */
     private function leaseData(Lease $lease): array
     {
+        $currentRent = $lease->rentForDate(now()->startOfMonth());
+        $upcomingRevision = $lease->rentRevisions
+            ->where('status', 'approved')
+            ->filter(fn (LeaseRentRevision $revision): bool => $revision->effective_from->isAfter(now()->startOfMonth()))
+            ->sortBy('effective_from')
+            ->first();
+
         return [
             'id' => $lease->id,
             'lease_number' => $lease->lease_number,
@@ -276,7 +294,8 @@ class LeaseController extends Controller
             ],
             'start_date' => $lease->start_date->toDateString(),
             'end_date' => $lease->end_date?->toDateString(),
-            'rent_amount' => $lease->rent_amount,
+            'rent_amount' => $currentRent,
+            'standard_unit_rent' => $lease->unit->rent_amount,
             'deposit_amount' => $lease->deposit_amount,
             'due_day' => $lease->due_day,
             'grace_days' => $lease->grace_days,
@@ -291,6 +310,29 @@ class LeaseController extends Controller
             'next_due_date' => $lease->status === 'active'
                 ? $this->nextDueDate($lease->due_day)->format('M j, Y')
                 : null,
+            'upcoming_rent' => $upcomingRevision === null ? null : [
+                'amount' => $upcomingRevision->amount,
+                'effective_from' => $upcomingRevision->effective_from->toDateString(),
+                'effective_from_label' => $upcomingRevision->effective_from->format('d M Y'),
+            ],
+            'rent_revisions' => $lease->rentRevisions->map(fn (LeaseRentRevision $revision): array => [
+                'id' => $revision->id,
+                'previous_amount' => $revision->previous_amount,
+                'amount' => $revision->amount,
+                'effective_from' => $revision->effective_from->toDateString(),
+                'effective_from_label' => $revision->effective_from->format('d M Y'),
+                'reason' => $revision->reason,
+                'notes' => $revision->notes,
+                'status' => $revision->status,
+                'notify_tenant' => $revision->notify_tenant,
+                'notified' => $revision->notified_at !== null,
+                'created_by' => $revision->created_by === null ? 'System' : $revision->creator->name,
+                'approved_by' => $revision->approved_by === null ? null : $revision->approver->name,
+                'created_at' => $revision->created_at?->format('d M Y, g:i A'),
+                'can_cancel' => ! $revision->effective_from->isBefore(now()->startOfMonth())
+                    && (auth()->user()?->isSuperAdmin() === true
+                        || ($revision->status === 'pending' && $revision->created_by === auth()->id())),
+            ])->values(),
         ];
     }
 

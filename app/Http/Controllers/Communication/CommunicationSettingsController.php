@@ -15,7 +15,7 @@ class CommunicationSettingsController extends Controller
 {
     public function index(Request $request): Response
     {
-        abort_unless($request->user()?->role === 'administrator', 403);
+        abort_unless($request->user()?->isSuperAdmin(), 403);
 
         $settings = CommunicationSetting::current();
         $deliveries = CommunicationDelivery::query()

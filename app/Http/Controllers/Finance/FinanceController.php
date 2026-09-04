@@ -8,13 +8,14 @@ use App\Models\Lease;
 use App\Models\Payment;
 use App\Models\SettlementAccount;
 use Carbon\CarbonImmutable;
+use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class FinanceController extends Controller
 {
-    public function __invoke(): Response
+    public function __invoke(Request $request): Response
     {
         $today = CarbonImmutable::today();
         $currentPeriod = $today->startOfMonth();
@@ -39,6 +40,10 @@ class FinanceController extends Controller
             ->with(['unit.section.estate'])
             ->where('status', 'active')
             ->get();
+
+        if (! $request->user()?->isSuperAdmin()) {
+            return $this->operationsResponse($invoices, $payments, $activeLeases, $currentPeriod, $today);
+        }
 
         $outstanding = $invoices->filter(fn (Invoice $invoice): bool => $invoice->status !== 'void' && $invoice->balance_due > 0);
         $overdue = $outstanding->filter(fn (Invoice $invoice): bool => $invoice->effectiveStatus() === 'overdue');
@@ -107,6 +112,67 @@ class FinanceController extends Controller
                     'value' => $month->format('Y-m'),
                     'label' => $month->format('F Y'),
                 ];
+            })->reverse()->values(),
+            'current_billing_month' => $currentPeriod->format('Y-m'),
+            'today' => $today->toDateString(),
+        ]);
+    }
+
+    /**
+     * @param  Collection<int, Invoice>  $invoices
+     * @param  Collection<int, Payment>  $payments
+     * @param  Collection<int, Lease>  $activeLeases
+     */
+    private function operationsResponse(Collection $invoices, Collection $payments, Collection $activeLeases, CarbonImmutable $currentPeriod, CarbonImmutable $today): Response
+    {
+        $outstanding = $invoices->filter(fn (Invoice $invoice): bool => $invoice->status !== 'void' && $invoice->balance_due > 0);
+
+        return Inertia::render('finance/Operations', [
+            'counts' => [
+                'active_leases' => $activeLeases->count(),
+                'invoices' => $invoices->count(),
+                'payments' => $payments->where('status', 'confirmed')->count(),
+                'overdue' => $outstanding->filter(fn (Invoice $invoice): bool => $invoice->effectiveStatus() === 'overdue')->count(),
+                'unbilled_current' => $activeLeases->filter(function (Lease $lease) use ($invoices, $currentPeriod): bool {
+                    return ! $invoices->contains(fn (Invoice $invoice): bool => $invoice->lease_id === $lease->id
+                        && $invoice->billing_period_start->isSameDay($currentPeriod));
+                })->count(),
+            ],
+            'invoices' => $invoices->map(fn (Invoice $invoice): array => [
+                'id' => $invoice->id,
+                'invoice_number' => $invoice->invoice_number,
+                'billing_month' => $invoice->billing_period_start->format('M Y'),
+                'due_date_label' => $invoice->due_date->format('d M Y'),
+                'status' => $invoice->effectiveStatus(),
+                'total_amount' => $invoice->total_amount,
+                'balance_due' => $invoice->balance_due,
+                'pdf_url' => route('finance.invoices.pdf', $invoice),
+                'tenant' => $invoice->tenant->full_name,
+                'tenant_email' => $invoice->tenant->email,
+                'unit' => $invoice->unit->code,
+                'estate' => $invoice->unit->section->estate->name,
+            ])->values(),
+            'payments' => $payments->map(function (Payment $payment): array {
+                $invoice = $payment->allocations->first()?->invoice;
+
+                return [
+                    'id' => $payment->id,
+                    'receipt_number' => $payment->receipt_number,
+                    'amount' => $payment->amount,
+                    'paid_at_label' => $payment->paid_at->format('d M Y'),
+                    'payment_method_label' => $this->paymentMethodLabel($payment->payment_method, $payment->card_brand),
+                    'status' => $payment->status,
+                    'receipt_url' => route('finance.payments.receipt', $payment),
+                    'tenant' => $payment->tenant->full_name,
+                    'invoice_number' => $invoice?->invoice_number,
+                    'unit' => $invoice?->unit->code,
+                    'estate' => $invoice?->unit->section->estate->name,
+                ];
+            })->values(),
+            'billing_periods' => collect(range(-12, 3))->map(function (int $offset) use ($currentPeriod): array {
+                $month = $currentPeriod->addMonths($offset);
+
+                return ['value' => $month->format('Y-m'), 'label' => $month->format('F Y')];
             })->reverse()->values(),
             'current_billing_month' => $currentPeriod->format('Y-m'),
             'today' => $today->toDateString(),

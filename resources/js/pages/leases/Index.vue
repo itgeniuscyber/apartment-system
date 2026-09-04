@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { Head, Link, router, useForm } from '@inertiajs/vue3';
+import { Head, Link, router, useForm, usePage } from '@inertiajs/vue3';
 import {
     AlertTriangle,
     Building2,
     CalendarCheck,
     CalendarDays,
+    CalendarRange,
     CircleDollarSign,
     Clock3,
     FileCheck2,
     FilePlus2,
+    History,
     MoreHorizontal,
     Pencil,
     Play,
@@ -81,6 +83,7 @@ type Lease = {
     start_date: string;
     end_date: string | null;
     rent_amount: number;
+    standard_unit_rent: number;
     deposit_amount: number;
     due_day: number;
     grace_days: number;
@@ -93,6 +96,29 @@ type Lease = {
     can_delete: boolean;
     has_financial_history: boolean;
     next_due_date: string | null;
+    upcoming_rent: {
+        amount: number;
+        effective_from: string;
+        effective_from_label: string;
+    } | null;
+    rent_revisions: RentRevision[];
+};
+
+type RentRevision = {
+    id: number;
+    previous_amount: number;
+    amount: number;
+    effective_from: string;
+    effective_from_label: string;
+    reason: string;
+    notes: string | null;
+    status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+    notify_tenant: boolean;
+    notified: boolean;
+    created_by: string;
+    approved_by: string | null;
+    created_at: string | null;
+    can_cancel: boolean;
 };
 
 const props = defineProps<{
@@ -115,6 +141,13 @@ const actionDialogOpen = ref(false);
 const actionLease = ref<Lease | null>(null);
 const actionType = ref<'activate' | 'end' | 'delete'>('activate');
 const actionProcessing = ref(false);
+const rentDialogOpen = ref(false);
+const selectedRentLeaseId = ref<number | null>(null);
+const rentActionProcessing = ref<number | null>(null);
+const page = usePage();
+const isSuperAdmin = computed(
+    () => page.props.auth.access?.is_super_admin ?? false,
+);
 const today = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Africa/Kampala',
 }).format(new Date());
@@ -131,6 +164,27 @@ const leaseForm = useForm({
     status: 'draft',
     notes: '',
 });
+
+const nextMonthStart = (): string => {
+    const date = new Date();
+    date.setUTCMonth(date.getUTCMonth() + 1, 1);
+
+    return date.toISOString().slice(0, 10);
+};
+
+const rentForm = useForm({
+    amount: 0,
+    effective_from: nextMonthStart(),
+    reason: 'annual_review',
+    notes: '',
+    notify_tenant: true,
+});
+
+const selectedRentLease = computed(
+    () =>
+        props.leases.find((lease) => lease.id === selectedRentLeaseId.value) ??
+        null,
+);
 
 const endLeaseForm = useForm({
     end_date: today,
@@ -219,6 +273,99 @@ const statusClass = (status: string): string => {
     }
 
     return 'bg-amber-500/10 text-amber-600 dark:text-amber-400';
+};
+
+const revisionStatusClass = (status: RentRevision['status']): string => {
+    if (status === 'approved') {
+        return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400';
+    }
+
+    if (status === 'pending') {
+        return 'bg-amber-500/10 text-amber-600 dark:text-amber-400';
+    }
+
+    return 'bg-secondary text-muted-foreground';
+};
+
+const reasonLabel = (reason: string): string =>
+    reason
+        .split('_')
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+
+const openRentDialog = (lease: Lease): void => {
+    selectedRentLeaseId.value = lease.id;
+    rentForm.reset();
+    rentForm.clearErrors();
+    rentForm.amount = lease.upcoming_rent?.amount ?? lease.rent_amount;
+    rentForm.effective_from = nextMonthStart();
+    rentDialogOpen.value = true;
+};
+
+const submitRentRevision = (): void => {
+    const lease = selectedRentLease.value;
+
+    if (!lease) {
+        return;
+    }
+
+    rentForm.post(`/leases/${lease.id}/rent-revisions`, {
+        preserveScroll: true,
+        onSuccess: () => {
+            rentForm.reset();
+            rentDialogOpen.value = false;
+            toast.success(
+                isSuperAdmin.value
+                    ? 'Rent change approved and scheduled'
+                    : 'Rent change sent for Super Admin approval',
+            );
+        },
+    });
+};
+
+const performRentAction = (
+    revision: RentRevision,
+    action: 'approve' | 'reject' | 'cancel',
+): void => {
+    const lease = selectedRentLease.value;
+
+    if (!lease) {
+        return;
+    }
+
+    rentActionProcessing.value = revision.id;
+    const options = {
+        preserveScroll: true,
+        onSuccess: () =>
+            toast.success(
+                action === 'approve'
+                    ? 'Rent change approved'
+                    : action === 'reject'
+                      ? 'Rent change rejected'
+                      : 'Rent change cancelled',
+            ),
+        onError: (errors: Record<string, string>) =>
+            toast.error(
+                Object.values(errors)[0] ??
+                    'The rent action could not be completed',
+            ),
+        onFinish: () => (rentActionProcessing.value = null),
+    };
+
+    if (action === 'cancel') {
+        router.delete(
+            `/leases/${lease.id}/rent-revisions/${revision.id}`,
+            options,
+        );
+
+        return;
+    }
+
+    router.patch(
+        `/leases/${lease.id}/rent-revisions/${revision.id}/${action}`,
+        {},
+        options,
+    );
 };
 
 const openLeaseDialog = (lease: Lease | null = null): void => {
@@ -558,6 +705,23 @@ const confirmLeaseAction = (): void => {
                             Due day {{ lease.due_day }} ·
                             {{ lease.grace_days }} grace days
                         </p>
+                        <p
+                            v-if="lease.upcoming_rent"
+                            class="mt-1 flex items-center gap-1 text-[9px] font-semibold text-amber-600 dark:text-amber-400"
+                        >
+                            <CalendarRange class="size-3" />
+                            {{ formatMoney(lease.upcoming_rent.amount) }} from
+                            {{ lease.upcoming_rent.effective_from_label }}
+                        </p>
+                        <p
+                            v-else-if="
+                                lease.rent_amount !== lease.standard_unit_rent
+                            "
+                            class="mt-1 text-[9px] text-muted-foreground"
+                        >
+                            Unit standard:
+                            {{ formatMoney(lease.standard_unit_rent) }}
+                        </p>
                     </div>
 
                     <div>
@@ -612,6 +776,14 @@ const confirmLeaseAction = (): void => {
                                     @click="openLeaseDialog(lease)"
                                 >
                                     <Pencil class="size-3.5" /> Edit lease
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                    v-if="lease.can_end"
+                                    class="gap-2 text-xs text-accent focus:text-accent"
+                                    @click="openRentDialog(lease)"
+                                >
+                                    <CalendarRange class="size-3.5" /> Change
+                                    tenant rent
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                     v-if="lease.can_activate"
@@ -834,8 +1006,22 @@ const confirmLeaseAction = (): void => {
                             min="0"
                             step="1000"
                             class="h-11 rounded-xl"
+                            :disabled="
+                                !!editingLease &&
+                                !editingLease.can_edit_assignment
+                            "
                         />
                         <InputError :message="leaseForm.errors.rent_amount" />
+                        <p
+                            v-if="
+                                editingLease &&
+                                !editingLease.can_edit_assignment
+                            "
+                            class="text-[10px] leading-4 text-muted-foreground"
+                        >
+                            Use “Change tenant rent” to schedule a dated,
+                            approved revision with a permanent history.
+                        </p>
                     </div>
                     <div class="space-y-2">
                         <Label for="lease-deposit">Security deposit</Label>
@@ -957,6 +1143,399 @@ const confirmLeaseAction = (): void => {
                     </button>
                 </DialogFooter>
             </form>
+        </DialogContent>
+    </Dialog>
+
+    <Dialog v-model:open="rentDialogOpen">
+        <DialogContent
+            class="max-h-[calc(100svh-2rem)] overflow-y-auto rounded-[1.5rem] border-border/70 p-0 sm:max-w-2xl"
+        >
+            <DialogHeader
+                class="border-b border-border/70 px-6 pt-6 pb-5 text-left"
+            >
+                <span
+                    class="mb-2 flex size-11 items-center justify-center rounded-2xl bg-accent/10 text-accent"
+                    ><CalendarRange class="size-5"
+                /></span>
+                <DialogTitle class="text-xl tracking-[-0.035em]">
+                    Change tenant rent
+                </DialogTitle>
+                <DialogDescription class="text-xs leading-5">
+                    {{ selectedRentLease?.tenant.full_name }} ·
+                    {{ selectedRentLease?.unit.code }}. Schedule changes by
+                    month while preserving every previous rate and issued
+                    invoice.
+                </DialogDescription>
+            </DialogHeader>
+
+            <div v-if="selectedRentLease" class="space-y-5 px-6 py-5">
+                <div class="grid gap-3 sm:grid-cols-3">
+                    <div class="rounded-2xl border border-border/70 p-4">
+                        <p
+                            class="text-[9px] font-bold tracking-wide text-muted-foreground uppercase"
+                        >
+                            Current tenant rent
+                        </p>
+                        <p class="money mt-2 text-sm font-semibold">
+                            {{ formatMoney(selectedRentLease.rent_amount) }}
+                        </p>
+                    </div>
+                    <div class="rounded-2xl border border-border/70 p-4">
+                        <p
+                            class="text-[9px] font-bold tracking-wide text-muted-foreground uppercase"
+                        >
+                            Unit standard rate
+                        </p>
+                        <p class="money mt-2 text-sm font-semibold">
+                            {{
+                                formatMoney(
+                                    selectedRentLease.standard_unit_rent,
+                                )
+                            }}
+                        </p>
+                    </div>
+                    <div class="rounded-2xl border border-border/70 p-4">
+                        <p
+                            class="text-[9px] font-bold tracking-wide text-muted-foreground uppercase"
+                        >
+                            Next approved rate
+                        </p>
+                        <template v-if="selectedRentLease.upcoming_rent">
+                            <p class="money mt-2 text-sm font-semibold">
+                                {{
+                                    formatMoney(
+                                        selectedRentLease.upcoming_rent.amount,
+                                    )
+                                }}
+                            </p>
+                            <p class="mt-1 text-[9px] text-muted-foreground">
+                                {{
+                                    selectedRentLease.upcoming_rent
+                                        .effective_from_label
+                                }}
+                            </p>
+                        </template>
+                        <p v-else class="mt-2 text-xs text-muted-foreground">
+                            None scheduled
+                        </p>
+                    </div>
+                </div>
+
+                <form
+                    class="space-y-4 rounded-2xl border border-border/70 bg-muted/20 p-4"
+                    @submit.prevent="submitRentRevision"
+                >
+                    <div class="flex items-center justify-between gap-4">
+                        <div>
+                            <h3 class="text-sm font-semibold">
+                                Schedule a new rate
+                            </h3>
+                            <p class="mt-1 text-[10px] text-muted-foreground">
+                                {{
+                                    isSuperAdmin
+                                        ? 'Your change is approved immediately.'
+                                        : 'A Super Admin must approve this before it affects billing.'
+                                }}
+                            </p>
+                        </div>
+                        <span
+                            class="rounded-full bg-accent/10 px-2.5 py-1 text-[9px] font-bold text-accent"
+                        >
+                            {{
+                                isSuperAdmin
+                                    ? 'AUTO APPROVAL'
+                                    : 'APPROVAL REQUIRED'
+                            }}
+                        </span>
+                    </div>
+
+                    <div class="grid gap-4 sm:grid-cols-2">
+                        <div class="space-y-2">
+                            <Label for="tenant-rent-amount"
+                                >New monthly rent</Label
+                            >
+                            <Input
+                                id="tenant-rent-amount"
+                                v-model="rentForm.amount"
+                                type="number"
+                                min="0"
+                                step="1000"
+                                class="h-11 rounded-xl"
+                            />
+                            <InputError :message="rentForm.errors.amount" />
+                        </div>
+                        <div class="space-y-2">
+                            <Label for="tenant-rent-effective"
+                                >Effective month</Label
+                            >
+                            <Input
+                                id="tenant-rent-effective"
+                                v-model="rentForm.effective_from"
+                                type="date"
+                                class="h-11 rounded-xl"
+                            />
+                            <InputError
+                                :message="rentForm.errors.effective_from"
+                            />
+                            <p class="text-[10px] text-muted-foreground">
+                                Select the first day of a month.
+                            </p>
+                        </div>
+                        <div class="space-y-2 sm:col-span-2">
+                            <Label for="tenant-rent-reason"
+                                >Reason for change</Label
+                            >
+                            <select
+                                id="tenant-rent-reason"
+                                v-model="rentForm.reason"
+                                class="h-11 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-ring focus:ring-3 focus:ring-ring/20"
+                            >
+                                <option value="annual_review">
+                                    Annual review
+                                </option>
+                                <option value="discount">
+                                    Tenant discount
+                                </option>
+                                <option value="negotiation">
+                                    Negotiated agreement
+                                </option>
+                                <option value="renovation">
+                                    Renovation or unit improvement
+                                </option>
+                                <option value="market_adjustment">
+                                    Market adjustment
+                                </option>
+                                <option value="correction">
+                                    Data correction
+                                </option>
+                                <option value="other">Other</option>
+                            </select>
+                            <InputError :message="rentForm.errors.reason" />
+                        </div>
+                        <div class="space-y-2 sm:col-span-2">
+                            <Label for="tenant-rent-notes"
+                                >Internal notes
+                                <span class="text-muted-foreground"
+                                    >(optional)</span
+                                ></Label
+                            >
+                            <textarea
+                                id="tenant-rent-notes"
+                                v-model="rentForm.notes"
+                                rows="3"
+                                placeholder="Add context for the approval and audit history..."
+                                class="w-full rounded-xl border border-input bg-background px-3 py-2.5 text-sm outline-none focus:border-ring focus:ring-3 focus:ring-ring/20"
+                            />
+                            <InputError :message="rentForm.errors.notes" />
+                        </div>
+                    </div>
+
+                    <label
+                        class="flex cursor-pointer items-start gap-3 rounded-xl border border-border/70 bg-card p-3"
+                    >
+                        <input
+                            v-model="rentForm.notify_tenant"
+                            type="checkbox"
+                            class="mt-0.5 size-4 rounded border-border accent-[var(--accent)]"
+                        />
+                        <span>
+                            <span class="block text-xs font-semibold"
+                                >Notify the tenant after approval</span
+                            >
+                            <span
+                                class="mt-1 block text-[10px] leading-4 text-muted-foreground"
+                                >Creates an instant dashboard notification and
+                                sends through enabled email, SMS, or WhatsApp
+                                channels.</span
+                            >
+                        </span>
+                    </label>
+
+                    <div class="flex justify-end">
+                        <button
+                            type="submit"
+                            class="inline-flex h-10 items-center gap-2 rounded-full bg-accent px-5 text-xs font-semibold text-white disabled:opacity-50"
+                            :disabled="rentForm.processing"
+                        >
+                            <CalendarRange class="size-4" />
+                            {{
+                                rentForm.processing
+                                    ? 'Scheduling...'
+                                    : isSuperAdmin
+                                      ? 'Approve & schedule'
+                                      : 'Submit for approval'
+                            }}
+                        </button>
+                    </div>
+                </form>
+
+                <div class="rounded-2xl border border-border/70">
+                    <div
+                        class="flex items-center gap-2 border-b border-border/70 px-4 py-3"
+                    >
+                        <History class="size-4 text-accent" />
+                        <div>
+                            <p class="text-xs font-semibold">
+                                Rent change history
+                            </p>
+                            <p class="mt-0.5 text-[9px] text-muted-foreground">
+                                Pending, approved, rejected, and cancelled
+                                decisions stay visible.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div
+                        v-if="selectedRentLease.rent_revisions.length"
+                        class="max-h-72 divide-y divide-border/70 overflow-y-auto"
+                    >
+                        <article
+                            v-for="revision in selectedRentLease.rent_revisions"
+                            :key="revision.id"
+                            class="px-4 py-3"
+                        >
+                            <div
+                                class="flex flex-col justify-between gap-3 sm:flex-row sm:items-start"
+                            >
+                                <div>
+                                    <div
+                                        class="flex flex-wrap items-center gap-2"
+                                    >
+                                        <p class="money text-xs font-semibold">
+                                            {{
+                                                formatMoney(
+                                                    revision.previous_amount,
+                                                )
+                                            }}
+                                            → {{ formatMoney(revision.amount) }}
+                                        </p>
+                                        <span
+                                            class="rounded-full px-2 py-1 text-[8px] font-bold uppercase"
+                                            :class="
+                                                revisionStatusClass(
+                                                    revision.status,
+                                                )
+                                            "
+                                            >{{ revision.status }}</span
+                                        >
+                                    </div>
+                                    <p
+                                        class="mt-1.5 text-[10px] text-muted-foreground"
+                                    >
+                                        Effective
+                                        {{ revision.effective_from_label }} ·
+                                        {{ reasonLabel(revision.reason) }} · by
+                                        {{ revision.created_by }}
+                                    </p>
+                                    <p
+                                        v-if="revision.notes"
+                                        class="mt-1 text-[10px] leading-4 text-muted-foreground"
+                                    >
+                                        {{ revision.notes }}
+                                    </p>
+                                    <p
+                                        v-if="revision.approved_by"
+                                        class="mt-1 text-[9px] text-muted-foreground"
+                                    >
+                                        Approved by {{ revision.approved_by
+                                        }}{{
+                                            revision.notified
+                                                ? ' · Tenant notified'
+                                                : ''
+                                        }}
+                                    </p>
+                                </div>
+
+                                <div
+                                    v-if="
+                                        (isSuperAdmin &&
+                                            revision.status === 'pending') ||
+                                        revision.can_cancel
+                                    "
+                                    class="flex shrink-0 flex-wrap gap-1.5"
+                                >
+                                    <button
+                                        v-if="
+                                            isSuperAdmin &&
+                                            revision.status === 'pending'
+                                        "
+                                        type="button"
+                                        class="h-8 rounded-full bg-emerald-500/10 px-3 text-[9px] font-bold text-emerald-700 dark:text-emerald-400"
+                                        :disabled="
+                                            rentActionProcessing === revision.id
+                                        "
+                                        @click="
+                                            performRentAction(
+                                                revision,
+                                                'approve',
+                                            )
+                                        "
+                                    >
+                                        Approve
+                                    </button>
+                                    <button
+                                        v-if="
+                                            isSuperAdmin &&
+                                            revision.status === 'pending'
+                                        "
+                                        type="button"
+                                        class="h-8 rounded-full bg-secondary px-3 text-[9px] font-bold text-muted-foreground"
+                                        :disabled="
+                                            rentActionProcessing === revision.id
+                                        "
+                                        @click="
+                                            performRentAction(
+                                                revision,
+                                                'reject',
+                                            )
+                                        "
+                                    >
+                                        Reject
+                                    </button>
+                                    <button
+                                        v-if="revision.can_cancel"
+                                        type="button"
+                                        class="h-8 rounded-full bg-destructive/10 px-3 text-[9px] font-bold text-destructive"
+                                        :disabled="
+                                            rentActionProcessing === revision.id
+                                        "
+                                        @click="
+                                            performRentAction(
+                                                revision,
+                                                'cancel',
+                                            )
+                                        "
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        </article>
+                    </div>
+                    <p v-else class="px-4 py-6 text-xs text-muted-foreground">
+                        No tenant-specific rent changes have been recorded.
+                    </p>
+                </div>
+
+                <div
+                    class="flex items-start gap-3 rounded-2xl bg-muted/55 p-4 text-xs leading-5 text-muted-foreground"
+                >
+                    <ShieldCheck class="mt-0.5 size-4 shrink-0 text-accent" />
+                    An approved revision affects invoices created for its
+                    effective month and later. Existing invoices, payments, and
+                    receipts are never recalculated automatically.
+                </div>
+            </div>
+
+            <DialogFooter class="border-t border-border/70 px-6 py-5">
+                <button
+                    type="button"
+                    class="h-10 rounded-full px-4 text-xs font-semibold hover:bg-secondary"
+                    @click="rentDialogOpen = false"
+                >
+                    Close
+                </button>
+            </DialogFooter>
         </DialogContent>
     </Dialog>
 

@@ -26,7 +26,7 @@ class DatabaseSeeder extends Seeder
             ['email' => 'admin@krestates.test'],
             [
                 'name' => 'K&R Administrator',
-                'role' => 'administrator',
+                'role' => 'super_admin',
                 'email_verified_at' => now(),
                 'password' => Hash::make('password'),
             ],

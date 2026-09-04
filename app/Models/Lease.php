@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -17,6 +18,7 @@ use Illuminate\Support\Carbon;
  * @property Carbon $start_date
  * @property Carbon|null $end_date
  * @property int $rent_amount
+ * @property int|null $initial_rent_amount
  * @property int $deposit_amount
  * @property int $due_day
  * @property int $grace_days
@@ -30,6 +32,7 @@ use Illuminate\Support\Carbon;
  * @property-read Unit $unit
  * @property-read User|null $creator
  * @property-read Collection<int, Invoice> $invoices
+ * @property-read Collection<int, LeaseRentRevision> $rentRevisions
  */
 class Lease extends Model
 {
@@ -43,6 +46,7 @@ class Lease extends Model
         'start_date',
         'end_date',
         'rent_amount',
+        'initial_rent_amount',
         'deposit_amount',
         'due_day',
         'grace_days',
@@ -60,6 +64,7 @@ class Lease extends Model
             'start_date' => 'date',
             'end_date' => 'date',
             'rent_amount' => 'integer',
+            'initial_rent_amount' => 'integer',
             'deposit_amount' => 'integer',
             'due_day' => 'integer',
             'grace_days' => 'integer',
@@ -89,5 +94,31 @@ class Lease extends Model
     public function invoices(): HasMany
     {
         return $this->hasMany(Invoice::class)->orderByDesc('billing_period_start');
+    }
+
+    /** @return HasMany<LeaseRentRevision, $this> */
+    public function rentRevisions(): HasMany
+    {
+        return $this->hasMany(LeaseRentRevision::class)->orderByDesc('effective_from')->orderByDesc('id');
+    }
+
+    public function rentForDate(CarbonInterface $date): int
+    {
+        $revision = $this->relationLoaded('rentRevisions')
+            ? $this->rentRevisions
+                ->where('status', 'approved')
+                ->filter(fn (LeaseRentRevision $item): bool => $item->effective_from->lte($date))
+                ->sortByDesc('effective_from')
+                ->first()
+            : $this->rentRevisions()
+                ->where('status', 'approved')
+                ->whereDate('effective_from', '<=', $date)
+                ->first();
+
+        if ($revision instanceof LeaseRentRevision) {
+            return $revision->amount;
+        }
+
+        return $this->initial_rent_amount ?? $this->rent_amount;
     }
 }

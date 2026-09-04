@@ -9,7 +9,7 @@ class UpdateCommunicationSettingsRequest extends FormRequest
 {
     public function authorize(): bool
     {
-        return $this->user()?->role === 'administrator';
+        return $this->user()?->isSuperAdmin() === true;
     }
 
     /** @return array<string, mixed> */

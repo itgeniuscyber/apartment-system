@@ -2,7 +2,9 @@ export type User = {
     id: number;
     name: string;
     email: string;
-    role: 'administrator' | 'landlord' | 'manager' | 'tenant';
+    role: 'super_admin' | 'administrator' | 'landlord' | 'manager' | 'tenant';
+    is_active: boolean;
+    permissions?: string[] | null;
     avatar?: string;
     email_verified_at: string | null;
     two_factor_enabled?: boolean;
@@ -13,6 +15,11 @@ export type User = {
 
 export type Auth = {
     user: User;
+    access?: {
+        is_management: boolean;
+        is_super_admin: boolean;
+        permissions: string[];
+    };
 };
 
 export type Passkey = {

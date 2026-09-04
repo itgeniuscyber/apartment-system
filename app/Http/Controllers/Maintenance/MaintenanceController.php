@@ -31,7 +31,8 @@ class MaintenanceController extends Controller
             ],
             'requests' => $requests->map(fn (MaintenanceRequest $item): array => $this->requestData($item))->values(),
             'assignees' => User::query()
-                ->whereIn('role', ['administrator', 'landlord', 'manager'])
+                ->whereIn('role', ['super_admin', 'administrator', 'landlord', 'manager'])
+                ->where('is_active', true)
                 ->orderBy('name')
                 ->get(['id', 'name']),
         ]);

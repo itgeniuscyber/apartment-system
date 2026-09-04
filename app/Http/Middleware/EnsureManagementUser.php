@@ -13,7 +13,8 @@ class EnsureManagementUser
      */
     public function handle(Request $request, Closure $next): Response
     {
-        abort_unless($request->user()?->isManagement(), 403);
+        $user = $request->user();
+        abort_unless($user->isManagement() && $user->is_active, 403);
 
         return $next($request);
     }

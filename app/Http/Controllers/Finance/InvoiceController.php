@@ -20,7 +20,7 @@ class InvoiceController extends Controller
         $periodEnd = $periodStart->endOfMonth()->startOfDay();
 
         $leases = Lease::query()
-            ->with(['unit.section.estate.settlementAccount'])
+            ->with(['unit.section.estate.settlementAccount', 'rentRevisions'])
             ->where('status', 'active')
             ->whereDate('start_date', '<=', $periodEnd)
             ->where(function ($query) use ($periodStart): void {
@@ -58,6 +58,7 @@ class InvoiceController extends Controller
 
                 $dueDate = $periodStart->day(min($lease->due_day, $periodStart->daysInMonth));
                 $estate = $lease->unit->section->estate;
+                $rentAmount = $lease->rentForDate($periodStart);
 
                 $invoice = Invoice::query()->create([
                     'lease_id' => $lease->id,
@@ -70,9 +71,9 @@ class InvoiceController extends Controller
                     'issue_date' => $dueDate->subDays(7),
                     'due_date' => $dueDate,
                     'description' => 'Rent for '.$periodStart->format('F Y'),
-                    'total_amount' => $lease->rent_amount,
+                    'total_amount' => $rentAmount,
                     'amount_paid' => 0,
-                    'balance_due' => $lease->rent_amount,
+                    'balance_due' => $rentAmount,
                     'currency' => 'UGX',
                     'status' => 'sent',
                     'sent_at' => now(),

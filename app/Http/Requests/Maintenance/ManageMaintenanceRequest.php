@@ -18,7 +18,7 @@ class ManageMaintenanceRequest extends FormRequest
         return [
             'status' => ['required', Rule::in(['open', 'acknowledged', 'in_progress', 'resolved', 'closed'])],
             'priority' => ['required', Rule::in(['low', 'normal', 'urgent', 'emergency'])],
-            'assigned_to' => ['nullable', 'integer', Rule::exists('users', 'id')->whereIn('role', ['administrator', 'landlord', 'manager'])],
+            'assigned_to' => ['nullable', 'integer', Rule::exists('users', 'id')->whereIn('role', ['super_admin', 'administrator', 'landlord', 'manager'])->where('is_active', true)],
             'body' => ['nullable', 'string', 'max:4000'],
             'is_internal' => ['required', 'boolean'],
         ];
